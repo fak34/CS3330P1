@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Project 1</title>
+    <script src="./3p/d3/d3.min.js"></script>
+    <script src="./3p/topojson/topojson.min.js"></script>
+    <script src="./3p/d3-legend/d3-legend.min.js"></script>
+    <link href="https://fonts.googleapis.com/css?family=Alegreya|Alegreya+Sans" rel="stylesheet">
+    <style>
+        body{
+            font-family: "Alegreya Sans", sans-serif;
+            background-color: #111111;
+        }
+        path.state{
+            stroke: #aaaaaa;
+            stroke-width: 1px;
+            fill: #333333;
+        }
+        h1{
+            color: white;
+        }
+        h2 {
+            color: white;
+        }
+    </style>
+</head>
+<body>
+<div id="titlediv">
+    <h1 style="text-align: center">Delays and Cancellations for America's Most Frequent Flights</h1>
+</div>
+<div id="project"></div>
+<script>
+    var WIDTH = 800;
+    var HEIGHT = 450;
+    var LEGEND_WIDTH = 400;
+    var LEGEND_HEIGHT = 350;
+
+    var THRESHOLD_LEVELS = [0.16, 0.21, 0.26];
+    var COLORS = ['#d7191c','#fdae61','#a6d96a','#1a9641'].reverse();
+    var COLOR_LABELS = ["Less than 16%", "16%-21%", "21%-26%", "More than 26%"];
+    var GRAY_LINE_COLOR = '#888888';
+    var LOW_OPACITY = 0.3;
+    var HIGH_OPACITY = 0.95;
+
+    var STROKE_RANGE = [3, 10];
+
+    var CIRCLE_COLOR = "blue";
+    var CIRCLE_STROKE_COLOR = "gold";
+    var CIRCLE_RADIUS_RANGE = [1, 10];
+    var CIRCLE_OPACITY = 0.8;
+
+    var N = 60;
+    var N_AIRLINES = 10;
+
+    if (THRESHOLD_LEVELS.length + 1 !== COLORS.length){
+        console.error("wrong number of colors or threshold levels!!");
+    }
+
+    d3.queue()
+        .defer(d3.json, "./us.json")
+        .defer(d3.json, "./numCancelledDelayed.json")
+        .defer(d3.json, "./airports.json")
+        .defer(d3.json, "./airlines.json")
+        .await(doViz);
+
+    var states, numCancelledDelayed, airportsMap, airlines;
+    function doViz(err, rawMap, nCD, airports, a) {
+        var exclude_states = [2, 15];
+        states = topojson.feature(rawMap, rawMap.objects.states);
+        states.features = states.features.filter(function(elem){
+            return exclude_states.indexOf(elem.id) === -1;
+        });
+
+
+        numCancelledDelayed=nCD.slice(0, N);
+
+        airportsMap = d3.map(airports, function(d){
+            return d.IATA_CODE;
+        });
+
+        airlines = a;
+
+        var projectDiv = d3.select("#project");
+
+        var allAirlinesDiv = projectDiv.append("div").attr("class", "allAirlines");
+        allAirlinesDiv.append("div").style("width", WIDTH + "px")
+            .append("h2").text("All Airlines").style("text-align", "center");
+        makeMapSet(allAirlinesDiv, null, "All Airlines");
+
+        airlines.slice(0, N_AIRLINES).forEach(function(airline){
+            var airlineDiv = projectDiv.append("div").attr("class", "oneAirline");
+            airlineDiv.append("div").style("width", WIDTH + "px")
+                .append("h2").text(airline.AIRLINE).style("text-align", "center");
+            makeMapSet(airlineDiv, airline.IATA_CODE, airline.AIRLINE);
+        })
+
+    }
+
+    function makeMapSet(whereToAppend, airlineCode, airlineName){
+        COLORS.forEach(function(c1){
+            var colorsAndOpacities = {
+                colors: COLORS.map(function(c2) {
+                            return c1 === c2 ? c2 : GRAY_LINE_COLOR;
+                        }),
+                opacities: COLORS.map(function(c2) {
+                                return c1 === c2 ? HIGH_OPACITY : LOW_OPACITY;
+                            })
+            };
+
+            showMap(whereToAppend, colorsAndOpacities, airlineCode, airlineName);
+        });
+    }
+
+    function showMap(whereToAppend, colorsAndOpacities, airlineCode, airlineName){
+        var newDiv = whereToAppend.append("div");
+        var svg = newDiv.append("svg")
+            .attr("width", WIDTH)
+            .attr("height", HEIGHT);
+
+        var projection = d3.geoAlbersUsa();
+
+        projection.fitSize([WIDTH, HEIGHT], states);
+        var pathGenerator = d3.geoPath().projection(projection);
+
+        var paths = svg.selectAll("path").data(states.features);
+        paths.enter().append("path")
+            .merge(paths)
+            .attr("d", pathGenerator)
+            .attr("class", "state");
+
+
+        var airportsInViz = d3.set();
+        numCancelledDelayed.forEach(function(elem) {
+            var airportCodes = elem.key.split("-");
+            airportCodes.forEach(airportsInViz.add, airportsInViz);
+        });
+
+        function getCoordinate(airportCode){
+            var airport = airportsMap.get(airportCode);
+            return [airport.LONGITUDE, airport.LATITUDE];
+        }
+
+        function calculateFlights(airportCode){
+            var airport = airportsMap.get(airportCode);
+            return airport.NUM_FLIGHTS_LEAVING + airport.NUM_FLIGHTS_ARRIVING;
+        }
+
+        var airportsExtent = d3.extent(airportsInViz.values(), calculateFlights);
+        var circleScale = d3.scaleSqrt().domain(airportsExtent).range(CIRCLE_RADIUS_RANGE);
+
+        airportsInViz.each(function(airportCode){
+            svg.append("circle")
+                .attr("r", circleScale(calculateFlights(airportCode)))
+                .style("fill", CIRCLE_COLOR)
+                .style("opacity", CIRCLE_OPACITY)
+                .style("stroke", CIRCLE_STROKE_COLOR)
+                .attr("transform", "translate(" +projection(getCoordinate(airportCode))+")");
+        });
+
+
+        function calcPctBad(airportPair){
+            return (airportPair.numCancelled + airportPair.numDelayed)/airportPair.numFlights;
+        }
+        var numFlightsExtent = d3.extent(numCancelledDelayed, function(elem){
+            if (airlineCode){
+                var x = elem.byAirline[airlineCode];
+                return x ? x.numFlights : null;
+            }
+            return elem.numFlights;
+        });
+
+        var colorScale = d3.scaleThreshold()
+            .domain(THRESHOLD_LEVELS)
+            .range(colorsAndOpacities.colors);
+
+        var opacityScale = d3.scaleThreshold()
+            .domain(THRESHOLD_LEVELS)
+            .range(colorsAndOpacities.opacities);
+
+        var strokeScale = d3.scaleLinear()
+            .domain(numFlightsExtent)
+            .range(STROKE_RANGE);
+
+
+        numCancelledDelayed.forEach(function(elem, idx){
+            var airportCodes = elem.key.split("-");
+            var coordinates = airportCodes.map(getCoordinate);
+
+            var elemByAirline = airlineCode ? elem.byAirline[airlineCode] : elem;
+
+            if(!elemByAirline){
+                return;
+            }
+
+            var pctBad = calcPctBad(elemByAirline);
+
+            var mask = svg.append("mask")
+                .attr("id", "pathMask" + idx);
+
+            mask.append("rect")
+                .attr("x", 0)
+                .attr("y", 0)
+                .attr("width", WIDTH)
+                .attr("height", HEIGHT)
+                .style("fill", "white");
+
+            airportCodes.forEach(function(airportCode){
+                mask.append("circle")
+                    .attr("r", circleScale(calculateFlights(airportCode)))
+                    .style("fill", "black")
+                    .attr("transform", "translate(" +projection(getCoordinate(airportCode))+")");
+            });
+
+
+            svg.append("path")
+                .datum({type: "LineString", coordinates: coordinates})
+                .attr("d", pathGenerator)
+                .attr("stroke-width", strokeScale(elemByAirline.numFlights))
+                .attr("stroke", colorScale(pctBad))
+                .attr("fill", "none")
+                .attr("opacity", opacityScale(pctBad))
+                .attr("mask", "url(#pathMask" + idx + ")");
+        });
+
+        var legend = newDiv.append("svg")
+            .attr("height", LEGEND_HEIGHT)
+            .attr("width", LEGEND_WIDTH);
+
+        var circleLegend = legend.append("g");
+        circleLegend.attr("transform", "translate(80, 50)");
+
+        var circleLegendGenerator = d3.legendSize()
+            .scale(circleScale)
+            .shape('circle')
+            .shapePadding(24)
+            .labels(function(o){
+                return Math.round(o.generatedLabels[o.i]/1000) + "K";
+            })
+            .labelOffset(20)
+            .orient('horizontal');
+
+        circleLegend.call(circleLegendGenerator);
+
+        circleLegend.selectAll("circle")
+            .style("fill", CIRCLE_COLOR)
+            .style("opacity", CIRCLE_OPACITY)
+            .style("stroke", CIRCLE_STROKE_COLOR);
+
+        circleLegend.selectAll(".label")
+            .style("fill", "white");
+
+        legend.append("text")
+            .text("Total annual domestic flights to/from airport")
+            .style("fill", "white")
+            .attr("transform", "translate(10, 105)")
+            .style("font-size", "18px");
+
+        var colorLegend = legend.append("g");
+        colorLegend.attr("transform", "translate(90, 130)");
+
+        var colorLegendGenerator = d3.legendColor()
+            .scale(colorScale)
+            .labels(COLOR_LABELS);
+
+        colorLegend.call(colorLegendGenerator);
+
+        colorLegend.selectAll(".label")
+            .style("fill", "white");
+
+        legend.append("text")
+            .text("% of flights delayed or canceled")
+            .style("fill", "white")
+            .attr("transform", "translate(46, 220)")
+            .style("font-size", "18px");
+
+        legend.append("text")
+            .text("on the route")
+            .style("fill", "white")
+            .attr("transform", "translate(106, 240)")
+            .style("font-size", "18px");
+
+        var strokeLegend = legend.append("g");
+        strokeLegend.attr("transform", "translate(70, 270)");
+
+        var strokeLegendGenerator = d3.legendSize()
+            .scale(strokeScale)
+            .shape('line')
+            .shapePadding(16)
+            .labels(function(o){
+                if (Math.round(o.generatedLabels[o.i]/1000) >= 1){
+                return Math.round(o.generatedLabels[o.i]/1000) + "K";
+                }
+                else{
+                    return "<1K";
+                }
+            })
+            .labelOffset(20)
+            .orient('horizontal');
+
+        strokeLegend.call(strokeLegendGenerator);
+
+        strokeLegend.selectAll("line")
+            .style("stroke", "white")
+            .attr("transform", "rotate(90) translate(0,-8)");
+
+        strokeLegend.selectAll(".label")
+            .style("fill", "white");
+
+        legend.append("text")
+            .text("Number of flights on " + airlineName + " in 2015")
+            .style("fill", "white")
+            .attr("text-anchor", "middle")
+            .attr("x", 175)
+            .attr("y", 320)
+            .style("font-size", "18px");
+
+
+    }
+    
+</script>
+</body>
+</html>
