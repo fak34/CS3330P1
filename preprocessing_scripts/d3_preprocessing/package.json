@@ -1,0 +1,6 @@
+{
+  "name": "d3_preprocessing",
+  "dependencies": {
+    "d3": "^4.7.1"
+  }
+}
