@@ -1,0 +1,5 @@
+Put the files downloaded from Kaggle in this folder.
+They are not included here because flights.csv is a huge file and can't
+(or at least shouldn't) be included in the git repo or project submission.
+
+https://www.kaggle.com/usdot/flight-delays
